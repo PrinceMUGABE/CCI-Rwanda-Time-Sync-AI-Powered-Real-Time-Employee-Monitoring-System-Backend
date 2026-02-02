@@ -1,5 +1,7 @@
 from pathlib import Path
 import os
+import pytz
+import tzlocal
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -35,14 +37,17 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'channels',
+    'django_celery_beat',
     'userApp',
-    'onboarding',
-    'mentorshipApp',
-    'departmentApp',
-    'chatApp',
+    'shiftApp',
+    'performanceApp.apps.PerformanceAppConfig',
     'notificationApp',
-    'assistanceApp',
+    'taskApp',
+    'taskAssignmentApp',
+    'requestApp',
     'reportApp',
+    'rulesApp',
+
     
 ]
 
@@ -55,6 +60,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'backend.middleware.TimezoneMiddleware',
 ]
 
 
@@ -81,18 +87,45 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 ASGI_APPLICATION = 'backend.asgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+LANGUAGE_CODE = 'en-us'
 
+
+
+
+
+# Auto-detect and use system timezone
+try:
+    system_timezone = tzlocal.get_localzone_name()
+    TIME_ZONE = system_timezone
+    print(f"✓ Using system timezone: {TIME_ZONE}")
+    
+    # Get the UTC offset for MySQL
+    tz = pytz.timezone(system_timezone)
+    from datetime import datetime
+    offset = tz.utcoffset(datetime.now())
+    offset_hours = int(offset.total_seconds() / 3600)
+    offset_str = f"{'+' if offset_hours >= 0 else ''}{offset_hours:02d}:00"
+    
+except Exception as e:
+    print(f"⚠ Could not detect system timezone: {e}")
+    TIME_ZONE = 'Africa/Kigali'  # Fallback
+    offset_str = '+00:00'
+
+USE_TZ = True
+
+# Database Configuration with system timezone
 DATABASES = {
     'default': {
         'ENGINE': 'mysql.connector.django',
-        'NAME': 'teta_db',
+        'NAME': 'natasha',
         'USER': 'root',
         'PASSWORD': '07288',
         'HOST': 'localhost',
         'PORT': '3306',
-    }
+        'OPTIONS': {
+            'init_command': f"SET sql_mode='STRICT_TRANS_TABLES', time_zone='{offset_str}'",
+        },
+    },
 }
 
 
@@ -118,13 +151,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
-
-USE_I18N = True
-
-USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
@@ -272,15 +299,15 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '10000/day',
-        'user': '10000/day',
-        'assistance_anon': '500/hour',
-        'assistance_user': '5000/hour',
+        'anon': '50000/day',
+        'user': '50000/day',
+        'assistance_anon': '1000/hour',
+        'assistance_user': '50000/hour',
     }
 }
 
 # Email for assistance responses (extend existing EMAIL settings)
-ASSISTANCE_FROM_EMAIL = 'ai-assistance@digital-mentorship.com'  # Different from regular emails
+ASSISTANCE_FROM_EMAIL = 'ai-assistance@CCIRwanda.com'  # Different from regular emails
 
 # Logging configuration
 LOGGING = {
@@ -385,3 +412,118 @@ ALLOWED_FILE_TYPES = {
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file
+
+
+# settings.py
+# Celery Configuration
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60
+
+# Update CELERY_BEAT_SCHEDULE (replace existing one)
+from celery.schedules import crontab
+
+CELERY_WORKER_POOL = 'solo' # Use solo pool for Windows/debugging
+
+
+CELERY_BEAT_SCHEDULE = {
+    # ===== TASK ASSIGNMENT - FIXED TIMING =====
+    'auto-create-assignments-before-shifts': {
+        'task': 'taskAssignmentApp.tasks.auto_create_assignments_before_shifts',
+        'schedule': crontab(minute='*'),  # Every minute to catch 10-min window
+        'options': {'queue': 'assignments'}
+    },
+    
+    'send-task-reminders-multi-interval': {
+        'task': 'taskAssignmentApp.tasks.send_task_reminders',
+        'schedule': 120.0,  # Every 2 minutes to catch 30, 15, 10, 5 min windows
+        'options': {'queue': 'notifications'}
+    },
+    
+    'check-missed-assignments': {
+        'task': 'taskAssignmentApp.tasks.check_missed_assignments',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    
+    'generate-assignments-for-tomorrow-backup': {
+        'task': 'taskAssignmentApp.tasks.generate_assignments_for_tomorrow',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    
+    # ===== BREAK MANAGEMENT TASKS =====
+    'monitor-and-create-breaks': {
+        'task': 'performanceApp.tasks.monitor_and_create_breaks',
+        'schedule': crontab(minute='*'),  # Every minute
+        'options': {'queue': 'breaks'}
+    },
+    
+    'create-daily-breaks': {
+        'task': 'performanceApp.tasks.create_daily_breaks',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    
+    'create-upcoming-breaks': {
+        'task': 'performanceApp.tasks.create_upcoming_breaks',
+        'schedule': crontab(minute='*'),  # Every minute
+        'options': {'queue': 'breaks'}
+    },
+    
+    'check-missed-breaks-new': {
+        'task': 'performanceApp.tasks.check_missed_breaks',
+        'schedule': crontab(minute='*'),  # Every minutes
+    },
+    
+    'check-extended-breaks': {
+        'task': 'performanceApp.tasks.check_extended_breaks',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    
+    # ===== EXISTING TASKS =====
+    'auto-record-breaks': {
+        'task': 'performanceApp.tasks.auto_record_scheduled_breaks',
+        'schedule': crontab(minute='*'),  # Every 5 minutes
+    },
+    'monitor-breaks': {
+        'task': 'notificationApp.tasks.monitor_breaks',
+        'schedule': 120.0,  # Every 2 minutes
+    },
+    'cleanup-notifications': {
+        'task': 'notificationApp.tasks.cleanup_expired_notifications',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    'check-missed-breaks-old': {
+        'task': 'notificationApp.tasks.check_missed_breaks',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    'shift-start-reminders': {
+        'task': 'notificationApp.tasks.send_shift_start_reminders',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+    'shift-end-reminders': {
+        'task': 'notificationApp.tasks.send_shift_end_reminders',
+        'schedule': crontab(minute='*'),  # Every minute
+    },
+
+     'check-task-end-reminders': {
+        'task': 'notificationApp.tasks.check_task_end_reminders',
+        'schedule': crontab(minute='*'),  # Every minute
+        'options': {'queue': 'notifications'}
+    },
+    
+    'check-missed-tasks': {
+        'task': 'notificationApp.tasks.check_missed_tasks',
+        'schedule': crontab(minute='*/5'),  # Every 10 minutes
+        'options': {'queue': 'notifications'}
+    },
+
+    'send-shift-reminders': {
+        'task': 'notificationApp.tasks.send_shift_reminders',
+        'schedule': crontab(minute='*'),  # Every minute (combines start and end reminders)
+        'options': {'queue': 'notifications'}
+    },
+}

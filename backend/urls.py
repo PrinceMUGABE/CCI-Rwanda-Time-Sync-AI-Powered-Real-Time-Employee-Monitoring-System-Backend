@@ -7,13 +7,15 @@ from django.conf.urls.static import static
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include('userApp.urls')),
-    path('onboarding/', include('onboarding.urls')),
-    path('mentorship/', include('mentorshipApp.urls')),
-    path('departments/', include('departmentApp.urls')),
-    path('chats/', include('chatApp.urls')),
-    path('notifications/', include('notificationApp.urls')),
-    path('assistance/', include('assistanceApp.urls')),
+    path('shift/', include('shiftApp.urls')),
+    path('performance/', include('performanceApp.urls')),
+    path('notification/', include('notificationApp.urls')),
+    path('task/', include('taskApp.urls')),
+    path('task-assignment/', include('taskAssignmentApp.urls')),
+    path('request/', include('requestApp.urls')),
     path('report/', include('reportApp.urls')),
+    path('rules/', include('rulesApp.urls')),
+    
 ]
 
 if settings.DEBUG:

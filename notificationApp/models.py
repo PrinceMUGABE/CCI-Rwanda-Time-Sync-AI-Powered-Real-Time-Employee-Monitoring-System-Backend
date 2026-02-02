@@ -1,283 +1,221 @@
-# notificationApp/models.py - FIXED
-
+# notificationApp/models.py
 from django.db import models
-from django.utils.timezone import now
-from userApp.models import CustomUser
-from mentorshipApp.models import Mentorship
-from chatApp.models import ChatRoom
+from django.utils import timezone
 
 
-class UserNotificationManager(models.Manager):
-    """Custom manager for user notifications"""
-    
-    def get_user_notifications(self, user, include_archived=False):
-        """Get notifications for a specific user"""
-        queryset = self.filter(recipient=user)
-        
-        if not include_archived:
-            queryset = queryset.filter(is_archived=False)
-        
-        return queryset
-    
-    def get_unread_count(self, user):
-        """Get count of unread notifications for a user"""
-        return self.filter(recipient=user, is_read=False, is_archived=False).count()
-
-
-class ChatNotification(models.Model):
-    """
-    Notifications for chat events
-    """
+class Notification(models.Model):
+    """Store notifications for users"""
     NOTIFICATION_TYPES = [
-        ('new_message', 'New Message'),
-        ('case_assigned', 'Case Assigned'),
-        ('case_status_changed', 'Case Status Changed'),
-        ('chat_created', 'Chat Created'),
-        ('participant_added', 'Participant Added'),
-        ('participant_removed', 'Participant Removed'),
-        ('chat_archived', 'Chat Archived'),
-        ('session_scheduled', 'Session Scheduled'),
-        ('session_completed', 'Session Completed'),
-        ('session_cancelled', 'Session Cancelled'),
-        ('session_rescheduled', 'Session Rescheduled'),
-        ('session_reminder', 'Session Reminder'),
-        ('program_completed', 'Program Completed'),
-        ('mentorship_completed', 'Mentorship Completed'),
+        ('break_start_reminder', 'Break Start Reminder'),
+        ('break_end_reminder', 'Break End Reminder'),
+        ('break_missed', 'Break Missed'),
+        ('break_extended', 'Break Extended'),
+        ('shift_start_reminder', 'Shift Start Reminder'),
+        ('shift_end_reminder', 'Shift End Reminder'),
+        ('login_reminder', 'Login Reminder'),
+        ('logout_reminder', 'Logout Reminder'),
+        ('system_alert', 'System Alert'),
+        ('performance_alert', 'Performance Alert'),
+        ('task_end_reminder', 'Task End Reminder'),  # NEW
+        ('task_missed_alert', 'Task Missed Alert'),  # NEW
+        ('upcoming_task_alert', 'Upcoming Task Alert'),  # NEW
     ]
     
-    recipient = models.ForeignKey(
-        CustomUser,
+    PRIORITY_LEVELS = [
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+        ('urgent', 'Urgent'),
+    ]
+    
+    user = models.ForeignKey(
+        'userApp.CustomUser',
         on_delete=models.CASCADE,
-        related_name='chat_notifications'
-    )
-    sender = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        related_name='sent_chat_notifications',
-        null=True,
-        blank=True
-    )
-    chat_room = models.ForeignKey(
-        ChatRoom,
-        on_delete=models.SET_NULL,
-        related_name='notifications',
-        null=True,
-        blank=True
-    )
-    mentorship = models.ForeignKey(
-        Mentorship,
-        on_delete=models.SET_NULL,
-        related_name='notifications',
-        null=True,
-        blank=True
+        related_name='notifications'
     )
     
     notification_type = models.CharField(max_length=50, choices=NOTIFICATION_TYPES)
-    title = models.CharField(max_length=200)
+    title = models.CharField(max_length=255)
     message = models.TextField()
-    metadata = models.JSONField(default=dict, blank=True, null=True)
-    is_read = models.BooleanField(default=False)
-    is_archived = models.BooleanField(default=False)
-    created_at = models.DateTimeField(default=now)
-    read_at = models.DateTimeField(null=True, blank=True)
-    archived_at = models.DateTimeField(null=True, blank=True)
+    priority = models.CharField(max_length=20, choices=PRIORITY_LEVELS, default='medium')
     
-    # Set the custom manager CORRECTLY
-    objects = UserNotificationManager()
+    # Related objects
+    break_log = models.ForeignKey(
+        'performanceApp.BreakLog',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notifications'
+    )
+    
+    user_log = models.ForeignKey(
+        'userApp.UserLog',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notifications'
+    )
+    
+    # Status tracking
+    is_read = models.BooleanField(default=False)
+    is_sent = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    
+    # Action buttons data (JSON)
+    action_url = models.CharField(max_length=255, blank=True, null=True)
+    action_text = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Metadata
+    metadata = models.JSONField(default=dict, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="When notification becomes irrelevant")
     
     class Meta:
         ordering = ['-created_at']
-        verbose_name = 'Chat Notification'
-        verbose_name_plural = 'Chat Notifications'
         indexes = [
-            models.Index(fields=['recipient', 'is_read']),
-            models.Index(fields=['created_at']),
-            models.Index(fields=['notification_type']),
-            models.Index(fields=['is_archived']),
+            models.Index(fields=['user', 'is_read', 'created_at']),
+            models.Index(fields=['notification_type', 'created_at']),
+            models.Index(fields=['user', 'notification_type', 'is_read']),
         ]
+        verbose_name = 'Notification'
+        verbose_name_plural = 'Notifications'
     
     def __str__(self):
-        return f"Notification for {self.recipient.full_name}: {self.title}"
+        return f"{self.user.names} - {self.notification_type} - {self.created_at}"
     
     def mark_as_read(self):
         """Mark notification as read"""
         if not self.is_read:
             self.is_read = True
-            self.read_at = now()
-            self.save()
+            self.read_at = timezone.now()
+            self.save(update_fields=['is_read', 'read_at', 'updated_at'])
     
-    def mark_as_archived(self):
-        """Archive notification"""
-        if not self.is_archived:
-            self.is_archived = True
-            self.archived_at = now()
-            self.save()
+    def mark_as_sent(self):
+        """Mark notification as sent"""
+        if not self.is_sent:
+            self.is_sent = True
+            self.sent_at = timezone.now()
+            self.save(update_fields=['is_sent', 'sent_at', 'updated_at'])
     
-    def delete_notification(self):
-        """Soft delete notification"""
-        self.is_archived = True
-        self.archived_at = now()
-        self.save()
-
-
-class SystemNotification(models.Model):
-    """System-wide notifications"""
-    NOTIFICATION_LEVELS = [
-        ('info', 'Information'),
-        ('warning', 'Warning'),
-        ('alert', 'Alert'),
-        ('success', 'Success'),
-    ]
+    @property
+    def is_expired(self):
+        """Check if notification has expired"""
+        if self.expires_at:
+            return timezone.now() > self.expires_at
+        return False
     
-    title = models.CharField(max_length=200)
-    message = models.TextField()
-    level = models.CharField(max_length=10, choices=NOTIFICATION_LEVELS, default='info')
-    is_active = models.BooleanField(default=True)
-    is_global = models.BooleanField(default=False, help_text="Show to all users")
-    target_roles = models.JSONField(
-        default=list,
-        help_text="Specific roles to show notification to (empty for all)"
-    )
-    target_departments = models.JSONField(
-        default=list,
-        help_text="Specific departments to show notification to"
-    )
-    start_date = models.DateTimeField()
-    end_date = models.DateTimeField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey(
-        CustomUser,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='created_system_notifications'
-    )
-    
-    class Meta:
-        ordering = ['-created_at']
-        verbose_name = 'System Notification'
-        verbose_name_plural = 'System Notifications'
-    
-    def __str__(self):
-        return f"{self.title} ({self.level})"
-    
-    def is_active_now(self):
-        """Check if notification is currently active"""
-        if not self.is_active:
-            return False
+    @classmethod
+    def create_break_notification(cls, user, break_log, notification_type, title, message, priority='medium', expires_in_minutes=60):
+        """Helper method to create break-related notifications"""
+        expires_at = timezone.now() + timezone.timedelta(minutes=expires_in_minutes)
         
-        now_time = now()
-        if self.start_date > now_time:
-            return False
-        
-        if self.end_date and self.end_date < now_time:
-            return False
-        
-        return True
-    
-    def soft_delete(self):
-        """Soft delete system notification"""
-        self.is_active = False
-        self.save()
+        return cls.objects.create(
+            user=user,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            priority=priority,
+            break_log=break_log,
+            expires_at=expires_at,
+            metadata={
+                'break_name': break_log.break_template.name,
+                'scheduled_start': break_log.scheduled_start.isoformat(),
+                'scheduled_end': break_log.scheduled_end.isoformat(),
+            }
+        )
 
 
-class UserNotificationPreference(models.Model):
-    """User notification preferences"""
+class NotificationPreference(models.Model):
+    """User preferences for notifications"""
     user = models.OneToOneField(
-        CustomUser,
+        'userApp.CustomUser',
         on_delete=models.CASCADE,
         related_name='notification_preferences'
     )
     
-    # Chat notifications
-    enable_chat_notifications = models.BooleanField(default=True)
-    enable_message_notifications = models.BooleanField(default=True)
-    enable_group_chat_notifications = models.BooleanField(default=True)
-    enable_cross_department_notifications = models.BooleanField(default=True)
+    # Break notifications
+    break_start_reminder = models.BooleanField(default=True)
+    break_start_reminder_minutes = models.IntegerField(default=5, help_text="Minutes before break start")
     
-    # System notifications
-    enable_system_notifications = models.BooleanField(default=True)
-    enable_announcements = models.BooleanField(default=True)
-    enable_updates = models.BooleanField(default=True)
+    break_end_reminder = models.BooleanField(default=True)
+    break_end_reminder_minutes = models.IntegerField(default=5, help_text="Minutes before break end")
     
-    # Email notifications
-    enable_email_notifications = models.BooleanField(default=True)
-    email_frequency = models.CharField(
-        max_length=20,
-        choices=[
-            ('instant', 'Instant'),
-            ('daily', 'Daily Digest'),
-            ('weekly', 'Weekly Digest'),
-        ],
-        default='instant'
-    )
+    break_missed_alert = models.BooleanField(default=True)
+    break_extended_alert = models.BooleanField(default=True)
     
-    # Push notifications
-    enable_push_notifications = models.BooleanField(default=True)
+    # Shift notifications
+    shift_start_reminder = models.BooleanField(default=True)
+    shift_start_reminder_minutes = models.IntegerField(default=15, help_text="Minutes before shift start")
     
-    # Quiet hours
-    quiet_hours_start = models.TimeField(null=True, blank=True)
-    quiet_hours_end = models.TimeField(null=True, blank=True)
-    enable_quiet_hours = models.BooleanField(default=False)
+    shift_end_reminder = models.BooleanField(default=True)
+    shift_end_reminder_minutes = models.IntegerField(default=15, help_text="Minutes before shift end")
     
-    # Notification sound
-    enable_sound = models.BooleanField(default=True)
-    sound_name = models.CharField(max_length=50, default='default')
+    # Login/logout reminders
+    login_reminder = models.BooleanField(default=True)
+    logout_reminder = models.BooleanField(default=True)
     
-    updated_at = models.DateTimeField(auto_now=True)
+    # System alerts
+    system_alerts = models.BooleanField(default=True)
+    performance_alerts = models.BooleanField(default=True)
     
-    class Meta:
-        verbose_name = 'User Notification Preference'
-        verbose_name_plural = 'User Notification Preferences'
+    # Notification channels
+    web_notifications = models.BooleanField(default=True)
+    email_notifications = models.BooleanField(default=False)
     
-    def __str__(self):
-        return f"Notification preferences for {self.user.full_name}"
+    # Do Not Disturb
+    dnd_enabled = models.BooleanField(default=False)
+    dnd_start_time = models.TimeField(null=True, blank=True)
+    dnd_end_time = models.TimeField(null=True, blank=True)
     
-    def can_send_notification_now(self):
-        """Check if notifications can be sent during current time"""
-        if not self.enable_quiet_hours:
-            return True
-        
-        if not self.quiet_hours_start or not self.quiet_hours_end:
-            return True
-        
-        from datetime import datetime
-        current_time = datetime.now().time()
-        
-        if self.quiet_hours_start <= self.quiet_hours_end:
-            # Normal range (e.g., 22:00 - 06:00)
-            return not (self.quiet_hours_start <= current_time <= self.quiet_hours_end)
-        else:
-            # Overnight range (e.g., 22:00 - 06:00)
-            return not (current_time >= self.quiet_hours_start or current_time <= self.quiet_hours_end)
-
-
-class NotificationLog(models.Model):
-    """Log of all notifications sent"""
-    recipient = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name='notification_logs'
-    )
-    notification_type = models.CharField(max_length=50)
-    title = models.CharField(max_length=200)
-    message = models.TextField()
-    sent_via = models.JSONField(
-        default=list,
-        help_text="Channels used to send notification (email, push, in-app)"
-    )
-    success = models.BooleanField(default=True)
-    error_message = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # Task notifications
+    task_end_reminder = models.BooleanField(default=True)
+    task_end_reminder_minutes = models.IntegerField(default=5, help_text="Minutes before task end")
+    
+    upcoming_task_alert = models.BooleanField(default=True)
+    task_missed_alerts = models.BooleanField(default=True, help_text="Receive alerts for missed tasks")
     
     class Meta:
-        ordering = ['-created_at']
-        verbose_name = 'Notification Log'
-        verbose_name_plural = 'Notification Logs'
-        indexes = [
-            models.Index(fields=['recipient', 'created_at']),
-            models.Index(fields=['notification_type']),
-        ]
+        verbose_name = 'Notification Preference'
+        verbose_name_plural = 'Notification Preferences'
     
     def __str__(self):
-        status = "Success" if self.success else "Failed"
-        return f"{self.recipient.full_name} - {self.notification_type} ({status})"
+        return f"{self.user.names} - Notification Preferences"
+    
+    def is_dnd_active(self):
+        """Check if Do Not Disturb is currently active"""
+        if not self.dnd_enabled or not self.dnd_start_time or not self.dnd_end_time:
+            return False
+        
+        now = timezone.now().time()
+        
+        # Handle DND spanning midnight
+        if self.dnd_start_time <= self.dnd_end_time:
+            return self.dnd_start_time <= now <= self.dnd_end_time
+        else:
+            return now >= self.dnd_start_time or now <= self.dnd_end_time
+    
+    def should_send_notification(self, notification_type):
+        """Check if notification should be sent based on preferences"""
+        if self.is_dnd_active():
+            return False
+        
+        notification_mapping = {
+            'break_start_reminder': self.break_start_reminder,
+            'break_end_reminder': self.break_end_reminder,
+            'break_missed': self.break_missed_alert,
+            'break_extended': self.break_extended_alert,
+            'shift_start_reminder': self.shift_start_reminder,
+            'shift_end_reminder': self.shift_end_reminder,
+            'login_reminder': self.login_reminder,
+            'logout_reminder': self.logout_reminder,
+            'system_alert': self.system_alerts,
+            'performance_alert': self.performance_alerts,
+        }
+        
+        return notification_mapping.get(notification_type, True)

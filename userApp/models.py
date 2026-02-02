@@ -1,281 +1,324 @@
-# userApp/models.py - Fixed with Custom Email Field
+# userApp/models.py
 
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 from django.utils.timezone import now
 from django.core.exceptions import ValidationError
 from django.core.validators import EmailValidator
-import random
-import string
-import re
-
-
-class WorkEmailValidator(EmailValidator):
-    """Custom email validator that allows underscores in domain names"""
-    message = "Enter a valid work email address."
-    
-    # Modified regex to allow underscores in domain
-    domain_regex = r'((?:[A-Z0-9_](?:[A-Z0-9_-]{0,61}[A-Z0-9_])?\.)+)(?:[A-Z0-9_-]{2,63}(?<!-))$'
-    
-    def __call__(self, value):
-        # Custom validation for work email
-        if not value or '@' not in value:
-            raise ValidationError(self.message, code=self.code)
-        
-        # Split into local and domain parts
-        parts = value.rsplit('@', 1)
-        if len(parts) != 2:
-            raise ValidationError(self.message, code=self.code)
-        
-        local_part, domain_part = parts
-        
-        # Validate local part (before @)
-        if not local_part or len(local_part) > 64:
-            raise ValidationError(self.message, code=self.code)
-        
-        # Validate domain part (after @) - allow underscores
-        if not domain_part:
-            raise ValidationError(self.message, code=self.code)
-        
-        # Check for valid domain format (allowing underscores)
-        domain_pattern = r'^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*\.[a-zA-Z]{2,}$'
-        if not re.match(domain_pattern, domain_part):
-            raise ValidationError(self.message, code=self.code)
+from shiftApp.models import Shift, BreakTemplate
 
 
 class CustomUserManager(BaseUserManager):
-    def create_user(self, phone_number, email=None, full_name=None, role=None, department=None, 
-                    departments=None, status='pending', availability_status='inactive', 
-                    work_mail_address=None, password=None, created_by=None):
+    def create_user(self, emp_number, email, names, phone_number, salary=0, 
+                    role='employee', status='active', password=None, created_by=None,
+                    **extra_fields):  # Add **extra_fields to accept additional fields
+        if not emp_number:
+            raise ValueError("The employee number must be provided")
+        if not email:
+            raise ValueError("The email must be provided")
+        if not names:
+            raise ValueError("The name must be provided")
         if not phone_number:
             raise ValueError("The phone number must be provided")
-        if not full_name:
-            raise ValueError("The full name must be provided")
-        if not role:
-            raise ValueError("The role must be provided")
         if role not in [choice[0] for choice in CustomUser.ROLE_CHOICES]:
             raise ValueError("Invalid role selected")
-        
-        # Department validation based on role
-        from departmentApp.models import Department
-        
-        if role == 'mentee':
-            # Mentees require a single department (ForeignKey)
-            if not department:
-                raise ValueError("The department must be provided for mentee users")
-            
-            if not Department.objects.filter(id=department, status='active').exists():
-                raise ValueError("Invalid or inactive department selected")
-        
-        elif role == 'mentor':
-            # Mentors require departments list (ManyToMany)
-            if not departments or len(departments) == 0:
-                raise ValueError("At least one department must be provided for mentor users")
-            
-            # Validate all departments exist and are active
-            valid_depts = Department.objects.filter(id__in=departments, status='active')
-            if valid_depts.count() != len(departments):
-                raise ValueError("One or more selected departments are invalid or inactive")
-        
-        elif role in ['admin', 'hr']:
-            # Admin and HR don't require departments
-            department = None
-            departments = None
 
+        email = self.normalize_email(email)
         user = self.model(
+            emp_number=emp_number,
+            email=email,
+            names=names,
             phone_number=phone_number,
-            full_name=full_name,
+            salary=salary,
             role=role,
-            department_id=department if role == 'mentee' else None,
             status=status,
-            availability_status=availability_status
+            created_by=created_by,
+            **extra_fields  # Pass extra fields like current_shift, day_off, gender, etc.
         )
         
-        if email:
-            email = self.normalize_email(email)
-            user.email = email
-        
-        if work_mail_address:
-            user.work_mail_address = work_mail_address
-        else:
-            user.work_mail_address = self.generate_work_mail(full_name, role)
-        
-        if created_by:
-            user.created_by = created_by
-            
         user.set_password(password)
         user.save(using=self._db)
-        
-        # For mentors, set departments through M2M after saving
-        if role == 'mentor' and departments:
-            user.departments.set(departments)
-        
         return user
 
-    def create_superuser(self, phone_number, email, full_name, password=None, **extra_fields):
-        if not phone_number:
-            raise ValueError("The phone number must be provided for superuser")
-        if not email:
-            raise ValueError("The email must be provided for superuser")
-        if not full_name:
-            raise ValueError("The full name must be provided for superuser")
+    def create_superuser(self, emp_number, email, names, phone_number, password=None, **extra_fields):
         if not password:
             raise ValueError("The password must be provided for superuser")
         
-        work_mail = self.generate_work_mail(full_name, 'admin')
+        # Set default values for superuser
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('role', 'admin')
+        extra_fields.setdefault('status', 'active')
         
         user = self.create_user(
-            phone_number=phone_number,
+            emp_number=emp_number,
             email=email,
-            full_name=full_name,
-            role='admin',
-            department=None,
-            departments=None,
-            status='approved',
-            availability_status='active',
-            work_mail_address=work_mail,
-            password=password
+            names=names,
+            phone_number=phone_number,
+            password=password,
+            **extra_fields  # Pass all extra fields including salary
         )
+        
+        # Ensure superuser flags are set
         user.is_superuser = True
         user.is_staff = True
         user.save(using=self._db)
         return user
-
-    @staticmethod
-    def generate_work_mail(full_name, role):
-        """Generate work mail address from full name with role prefix."""
-        full_name = full_name.strip()
-        names = full_name.split()
-        
-        role_prefixes = {
-            'admin': 'admin',
-            'hr': 'hr',
-            'mentor': 'mentor',
-            'mentee': 'mentee'
-        }
-        role_prefix = role_prefixes.get(role, 'user')
-        
-        if len(names) >= 2:
-            first_initial = names[0][0].lower()
-            last_name = names[-1].lower().replace(' ', '')
-            base_mail = f"{first_initial}.{last_name}@{role_prefix}_btsl_mentorship.com"
-        else:
-            base_mail = f"{full_name.lower().replace(' ', '')}@{role_prefix}_btsl_mentorship.com"
-        
-        from userApp.models import CustomUser
-        mail_exists = CustomUser.objects.filter(work_mail_address=base_mail).exists()
-        
-        if not mail_exists:
-            return base_mail
-        
-        random_num = random.randint(100, 999)
-        if len(names) >= 2:
-            return f"{first_initial}.{last_name}{random_num}@{role_prefix}_btsl_mentorship.com"
-        else:
-            return f"{full_name.lower().replace(' ', '')}{random_num}@{role_prefix}_btsl_mentorship.com"
-
 class CustomUser(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
         ('admin', 'Admin'),
-        ('mentor', 'Mentor'),
-        ('mentee', 'Mentee'),
-        ('hr', 'HR'),
+        ('supervisor', 'Supervisor'),
+        ('employee', 'Employee'),
     ]
     
     STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-    ]
-    
-    AVAILABILITY_CHOICES = [
         ('active', 'Active'),
         ('inactive', 'Inactive'),
+        ('suspended', 'Suspended'),
     ]
 
-    phone_number = models.CharField(max_length=15, unique=True)
+    GENDER_CHOICES = [
+        ('male', 'Male'),
+        ('female', 'Female'),
+        ('other', 'Other'),
+        ('prefer_not_to_say', 'Prefer not to say'),
+    ]
+
+    emp_number = models.CharField(max_length=50, unique=True, verbose_name="Employee Number")
+    names = models.CharField(max_length=200)
     email = models.EmailField(unique=True)
-    
-    # Use CharField instead of EmailField to avoid validation issues with custom domain
-    work_mail_address = models.CharField(
-        max_length=255,
-        unique=True,
-        validators=[WorkEmailValidator()],
-        help_text="Work email address with custom domain format"
+    profile_picture = models.BinaryField(blank=True, null=True)
+    phone_number = models.CharField(max_length=15, unique=True)
+    salary = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='employee')
+    gender = models.CharField(
+        max_length=20,
+        choices=GENDER_CHOICES,
+        default='prefer_not_to_say'
+    )
+
+    day_off = models.CharField(
+        max_length=20,
+        choices=[
+            ('monday', 'Monday'),
+            ('tuesday', 'Tuesday'),
+            ('wednesday', 'Wednesday'),
+            ('thursday', 'Thursday'),
+            ('friday', 'Friday'),
+            ('saturday', 'Saturday'),
+            ('sunday', 'Sunday'),
+            ('none', 'No Day Off')  # Default value
+        ],
+        default='none',
+        verbose_name="Weekly Day Off"
     )
     
-    full_name = models.CharField(max_length=100)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='mentee')
-    
-    # Single department for mentee users (ForeignKey)
-    department = models.ForeignKey(
-        'departmentApp.Department',
+    # Shift assignment
+    current_shift = models.ForeignKey(
+        'shiftApp.Shift',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='users'
+        related_name='assigned_users'
     )
     
-    # Multiple departments for mentor users (ManyToManyField)
-    departments = models.ManyToManyField(
-        'departmentApp.Department',
+    # Supervisor relationship
+    supervisors = models.ManyToManyField(
+        'self',
+        symmetrical=False,
         blank=True,
-        related_name='mentors'
+        related_name='supervised_employees',
+        limit_choices_to={'role': 'supervisor'}
     )
     
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    availability_status = models.CharField(max_length=20, choices=AVAILABILITY_CHOICES, default='inactive')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
-    created_by = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_users')
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_users'
+    )
 
-    USERNAME_FIELD = 'phone_number'
-    REQUIRED_FIELDS = ['email', 'full_name']
+    USERNAME_FIELD = 'emp_number'
+    REQUIRED_FIELDS = ['email', 'names', 'phone_number']
 
     objects = CustomUserManager()
 
     def __str__(self):
-        return self.work_mail_address
+        return f"{self.emp_number} - {self.names}"
 
     @property
     def is_admin(self):
         return self.role == 'admin'
     
     @property
-    def is_hr(self):
-        return self.role == 'hr'
+    def is_supervisor(self):
+        return self.role == 'supervisor'
     
     @property
-    def is_mentor(self):
-        return self.role == 'mentor'
+    def is_employee(self):
+        return self.role == 'employee'
     
-    @property
-    def is_mentee(self):
-        return self.role == 'mentee'
+    def can_manage_users(self):
+        """Check if user can manage other users"""
+        return self.role == 'admin'
     
-    def can_update_departments(self):
-        """Check if user can update other users' departments"""
-        return self.role in ['admin', 'hr']
+    def can_supervise(self, employee):
+        """Check if this user can supervise the given employee"""
+        if self.role == 'admin':
+            return True
+        if self.role == 'supervisor':
+            return employee in self.supervised_employees.all()
+        return False
+    
+    def has_profile_picture(self):
+        """Check if user has uploaded profile picture"""
+        try:
+            if self.profile_picture:
+                # Check if it's bytes and has content
+                if isinstance(self.profile_picture, bytes):
+                    return len(self.profile_picture) > 0
+                # Check if it's memoryview
+                elif isinstance(self.profile_picture, memoryview):
+                    return len(self.profile_picture) > 0
+                return bool(self.profile_picture)
+            return False
+        except Exception:
+            return False
     
     def clean(self):
-        """Validate department requirements based on role"""
+        """Validate user data"""
         super().clean()
         
-        # Mentees require a single department
-        if self.role == 'mentee' and not self.department:
-            raise ValidationError({'department': 'Mentee users must have a department assigned.'})
-        
-        # Admin and HR don't require departments
-        if self.role in ['admin', 'hr']:
-            self.department = None
+        # Supervisors and admins cannot be supervised
+        if self.role in ['admin', 'supervisor'] and self.pk:
+            if self.supervisors.exists():
+                raise ValidationError({
+                    'supervisors': 'Admins and Supervisors cannot be assigned supervisors.'
+                })
     
     def save(self, *args, **kwargs):
-        # Only validate if not bypassing validation
-        if not kwargs.pop('skip_validation', False):
-            self.full_clean()
-        super().save(*args, **kwargs)
+        # Set is_staff for admin users
+        if self.role == 'admin':
+            self.is_staff = True
         
-        # Post-save validation for mentors
-        if self.role == 'mentor' and self.departments.count() == 0:
-            pass  # Allow save, validation happens in views/forms
+        super().save(*args, **kwargs)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'User'
+        verbose_name_plural = 'Users'
+
+
+
+
+
+
+class UserLog(models.Model):
+    """Comprehensive user activity logging system"""
+    LOG_TYPE_CHOICES = [
+        ('login', 'Login'),
+        ('logout', 'Logout'),
+        ('break_start', 'Break Start'),
+        ('break_end', 'Break End'),
+        ('shift_start', 'Shift Start'),
+        ('shift_end', 'Shift End'),
+        ('system_event', 'System Event'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('early', 'Early'),
+        ('on_time', 'On Time'),
+        ('late', 'Late'),
+        ('very_late', 'Very Late'),
+        ('absent', 'Absent'),
+        ('day_off', 'Day Off'),
+        ('system_auto', 'System Auto'),
+        ('manual', 'Manual'),
+    ]
+    
+    user = models.ForeignKey(
+        'userApp.CustomUser',
+        on_delete=models.CASCADE,
+        related_name='user_logs'
+    )
+    log_type = models.CharField(max_length=20, choices=LOG_TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES)
+    activity = models.CharField(max_length=255, help_text="Description of the activity")
+    system_generated_reason = models.TextField(blank=True, null=True)
+    
+    # Timing information
+    scheduled_time = models.DateTimeField(null=True, blank=True, help_text="When it was supposed to happen")
+    actual_time = models.DateTimeField(auto_now_add=True, help_text="When it actually happened")
+    
+    # Related objects (optional)
+    shift = models.ForeignKey(
+        'shiftApp.Shift',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='user_logs'
+    )
+    
+    break_log = models.ForeignKey(
+        'performanceApp.BreakLog',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='user_logs'
+    )
+
+    
+    # Metadata
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    device_info = models.CharField(max_length=255, blank=True, null=True)
+    is_auto_generated = models.BooleanField(default=False)
+    notes = models.TextField(blank=True, null=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-actual_time']
+        indexes = [
+            models.Index(fields=['user', 'log_type', 'actual_time']),
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['log_type', 'status']),
+        ]
+        verbose_name = 'User Log'
+        verbose_name_plural = 'User Logs'
+    
+    def __str__(self):
+        return f"{self.user.names} - {self.log_type} - {self.status} - {self.actual_time}"
+    
+    @property
+    def time_difference_minutes(self):
+        """Calculate time difference in minutes (negative = early, positive = late)"""
+        if self.scheduled_time and self.actual_time:
+            diff = self.actual_time - self.scheduled_time
+            return diff.total_seconds() / 60
+        return None
+    
+    @property
+    def punctuality_category(self):
+        """Categorize punctuality"""
+        diff = self.time_difference_minutes
+        
+        if diff is None:
+            return "unknown"
+        
+        if diff < -15:  # More than 15 minutes early
+            return "very_early"
+        elif -15 <= diff < 0:  # Up to 15 minutes early
+            return "early"
+        elif 0 <= diff <= 5:  # Up to 5 minutes late
+            return "on_time"
+        elif 5 < diff <= 30:  # 5-30 minutes late
+            return "late"
+        else:  # More than 30 minutes late
+            return "very_late"

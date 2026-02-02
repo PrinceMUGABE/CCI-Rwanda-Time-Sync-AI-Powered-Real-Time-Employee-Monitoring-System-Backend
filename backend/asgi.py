@@ -11,29 +11,27 @@ django_asgi_app = get_asgi_application()
 # NOW import Channels components (after Django is initialized)
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-from chatApp import routing as chat_routing
-from assistanceApp import routing as assistance_routing
 
 print("=" * 50)
-print("INITIALIZING ASGI APPLICATION WITH WEB SOCKETS")
+print("INITIALIZING ASGI APPLICATION")
 print("=" * 50)
 
-# Combine WebSocket URL patterns from both apps
+# Import routing modules
 websocket_urlpatterns = []
 
-# Add chatApp WebSocket patterns
 try:
+    from chatApp import routing as chat_routing
     websocket_urlpatterns += chat_routing.websocket_urlpatterns
     print(f"✅ Added {len(chat_routing.websocket_urlpatterns)} chatApp WebSocket patterns")
-except AttributeError as e:
-    print(f"❌ Error loading chatApp routing: {e}")
+except (ImportError, AttributeError) as e:
+    print(f"⚠️  chatApp routing not available: {e}")
 
-# Add assistanceApp WebSocket patterns
 try:
+    from assistanceApp import routing as assistance_routing
     websocket_urlpatterns += assistance_routing.websocket_urlpatterns
     print(f"✅ Added {len(assistance_routing.websocket_urlpatterns)} assistanceApp WebSocket patterns")
-except AttributeError as e:
-    print(f"❌ Error loading assistanceApp routing: {e}")
+except (ImportError, AttributeError) as e:
+    print(f"⚠️  assistanceApp routing not available: {e}")
 
 print(f"\n📋 TOTAL WebSocket patterns: {len(websocket_urlpatterns)}")
 for i, pattern in enumerate(websocket_urlpatterns, 1):
@@ -41,11 +39,13 @@ for i, pattern in enumerate(websocket_urlpatterns, 1):
 
 print("=" * 50)
 
+# Configure ASGI application
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
     "websocket": AuthMiddlewareStack(
-        URLRouter(
-            websocket_urlpatterns
-        )
+        URLRouter(websocket_urlpatterns)
     ),
 })
+
+print("✅ ASGI APPLICATION READY")
+print("=" * 50)
